@@ -1,0 +1,18 @@
+{
+  "short_name": "英文大師",
+  "name": "英文大師 - KGB 間隔複習系統",
+  "description": "基於 KGB 5 格間隔重複系統與 AI 語塊評批的英語學習 App",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "type": "image/svg+xml",
+      "sizes": "192x192 512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "display": "standalone",
+  "orientation": "portrait"
+}
