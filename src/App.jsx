@@ -124,6 +124,7 @@ export default function App() {
   };
 
   // 3. 挑選下一張字卡 (重點功能：按錯誤次數降序排列，錯越多次越優先出現！)
+  // 3. 挑選下一張字卡 (修復：今日已刷採隨機均勻輪調，到期複習採錯題加權)
   const pickNextCard = (cardList, mode = reviewMode) => {
     const list = cardList || cards;
     if (!list || list.length === 0) {
@@ -136,8 +137,10 @@ export default function App() {
     let targetList = [];
 
     if (mode === 'today') {
+      // 模式 1：今日已刷過/學習過的卡片
       targetList = list.filter(card => card.last_review_date === todayStr);
     } else {
+      // 模式 2：標準 SRS Leitner 5 格到期卡片
       targetList = list.filter(card => {
         if (!card.last_review_date) return true;
         const diffDays = Math.floor((new Date(todayStr) - new Date(card.last_review_date)) / (1000 * 3600 * 24));
@@ -152,13 +155,27 @@ export default function App() {
       return;
     }
 
-    // 🎯 核心優先度排序：錯誤次數越多 (error_count 越大) 排越前面！
-    const sortedList = [...targetList].sort((a, b) => (b.error_count || 0) - (a.error_count || 0));
+    let selectedCard = null;
 
-    // 取出錯誤次數最高的一批卡片（若有多張同分，從中隨機選一張增加隨機感）
-    const maxErrors = sortedList[0].error_count || 0;
-    const topCandidates = sortedList.filter(c => (c.error_count || 0) === maxErrors);
-    const selectedCard = topCandidates[Math.floor(Math.random() * topCandidates.length)];
+    if (mode === 'today') {
+      // 🎯 今日已刷模式：純隨機輪調，並排除當前卡片（避免一直卡在同一題）
+      const candidates = targetList.length > 1 
+        ? targetList.filter(c => c.id !== currentCard?.id)
+        : targetList;
+      selectedCard = candidates[Math.floor(Math.random() * candidates.length)];
+    } else {
+      // 🎯 到期複習模式：按錯誤次數降序排列，錯越多次越優先出現！
+      const sortedList = [...targetList].sort((a, b) => (b.error_count || 0) - (a.error_count || 0));
+      const maxErrors = sortedList[0].error_count || 0;
+      
+      // 取出錯誤次數最高的一批卡片，若有複數張則排除上一張後隨機抽
+      let topCandidates = sortedList.filter(c => (c.error_count || 0) === maxErrors);
+      if (topCandidates.length > 1 && currentCard) {
+        const withoutCurrent = topCandidates.filter(c => c.id !== currentCard.id);
+        if (withoutCurrent.length > 0) topCandidates = withoutCurrent;
+      }
+      selectedCard = topCandidates[Math.floor(Math.random() * topCandidates.length)];
+    }
     
     setCurrentCard(selectedCard);
     setUserInput('');
