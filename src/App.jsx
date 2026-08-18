@@ -4,7 +4,7 @@ import confetti from 'canvas-confetti';
 import { 
   Volume2, CheckCircle2, XCircle, Sparkles, PlusCircle, 
   RefreshCw, Bell, LogOut, MessageSquareText, Send, BookmarkPlus,
-  Upload, Wand2, Database, Search, Trash2, Flame
+  Upload, Wand2, Database, Search, Trash2, Flame, Sprout
 } from 'lucide-react';
 
 export default function App() {
@@ -16,7 +16,8 @@ export default function App() {
 
   // 分頁狀態：'review' | 'coach' | 'library' | 'add'
   const [activeTab, setActiveTab] = useState('review'); 
-  const [reviewMode, setReviewMode] = useState('due'); // 'due' (SRS到期) | 'today' (今日加固)
+  // 複習模式：'due' (SRS到期複習) | 'new' (學習全新單字) | 'today' (今日已刷加固)
+  const [reviewMode, setReviewMode] = useState('due'); 
   const [cards, setCards] = useState([]);
   const [currentCard, setCurrentCard] = useState(null);
   const [clozeSentence, setClozeSentence] = useState('');
@@ -140,7 +141,7 @@ export default function App() {
 
       setCards(allCards);
 
-      // 只有在目前完全沒有題目時才初次抽題
+      // 只有在完全沒有題目時才初次抽題
       setCurrentCard((prevCard) => {
         if (!prevCard && allCards.length > 0) {
           pickNextCard(allCards, reviewMode);
@@ -155,7 +156,7 @@ export default function App() {
     }
   };
 
-  // 3. 挑選下一張字卡（錯題分層加權優先排程 + 防連續卡死）
+  // 3. 挑選下一張字卡（核心：未作答過的字卡排除在到期複習之外！）
   const pickNextCard = (cardList, mode = reviewMode) => {
     const list = cardList || cards;
     if (!list || list.length === 0) {
@@ -167,13 +168,16 @@ export default function App() {
     const todayStr = getTodayStr();
     let targetList = [];
 
-    if (mode === 'today') {
-      // 今日已刷清單
+    if (mode === 'new') {
+      // 🌱 模式 1：未學習／未答題過的新字卡（last_review_date 為空）
+      targetList = list.filter(card => !card.last_review_date);
+    } else if (mode === 'today') {
+      // 📅 模式 2：今日已刷字卡
       targetList = list.filter(card => card.last_review_date === todayStr);
     } else {
-      // ⏰ 到期複習清單（依據 1/4/7/14/30 天判定）
+      // ⏰ 模式 3：到期複習（必須有答題記錄 + 且間隔已滿）
       targetList = list.filter(card => {
-        if (!card.last_review_date) return true;
+        if (!card.last_review_date) return false; // 🚫 未答題過的新卡絕不出現在到期複習中！
         const diffDays = Math.floor((new Date(todayStr) - new Date(card.last_review_date)) / (1000 * 3600 * 24));
         return diffDays >= (INTERVALS[card.box] || 1);
       });
@@ -181,33 +185,35 @@ export default function App() {
 
     if (targetList.length === 0) {
       setCurrentCard(null);
-      setClozeSentence(mode === 'today' ? '🎉 今日尚未有已複習的字卡！' : '🎉 今日所有到期字卡皆已複習完畢！');
+      if (mode === 'new') {
+        setClozeSentence('🎉 所有字卡皆已學習過！沒有未學習的新單字囉。');
+      } else if (mode === 'today') {
+        setClozeSentence('🎉 今日尚未有已複習的字卡！先前往「到期複習」或「學習新詞」吧。');
+      } else {
+        setClozeSentence('🎉 太棒了！今日所有到期字卡皆已複習完畢！');
+      }
       return;
     }
 
     let selectedCard = null;
 
-    if (mode === 'today') {
-      // 🎯 今日已刷：隨機輪調，排除上一題
+    if (mode === 'today' || mode === 'new') {
+      // 新詞與今日模式：隨機輪調，排除上一張
       const candidates = targetList.length > 1 
         ? targetList.filter(c => c.id !== currentCard?.id)
         : targetList;
       selectedCard = candidates[Math.floor(Math.random() * candidates.length)];
     } else {
-      // 🎯 到期複習：按錯題次數 error_count 降序排列
+      // 到期複習模式：按錯誤次數 error_count 降序排列，優先強化常錯題目
       const sortedList = [...targetList].sort((a, b) => (b.error_count || 0) - (a.error_count || 0));
       const maxErrors = sortedList[0].error_count || 0;
       
-      // 取出錯誤次數最多的一批字卡
       let topCandidates = sortedList.filter(c => (c.error_count || 0) === maxErrors);
-      
-      // 若最高層有多張，排除當前題目避免連出
       if (topCandidates.length > 1 && currentCard) {
         const withoutCurrent = topCandidates.filter(c => c.id !== currentCard.id);
         if (withoutCurrent.length > 0) topCandidates = withoutCurrent;
       }
       
-      // 若最高層只有 1 張且剛好就是上一題（剛答錯退回），若有其他到期卡則先穿插一張
       if (topCandidates.length === 1 && topCandidates[0].id === currentCard?.id && sortedList.length > 1) {
         const otherCandidates = sortedList.filter(c => c.id !== currentCard.id);
         selectedCard = otherCandidates[Math.floor(Math.random() * otherCandidates.length)];
@@ -255,7 +261,7 @@ export default function App() {
     return text.replace(/[#*`]/g, '').replace(/\n\s*\n/g, '\n\n').trim();
   };
 
-  // 5. 【間隔複習】作答檢查
+  // 5. 【作答檢查】判斷是否晉升/初次收錄
   const handleCheckAnswer = async () => {
     if (!userInput.trim() || !currentCard || isCheckingCloze) return;
 
@@ -265,6 +271,7 @@ export default function App() {
     const targetClean = cleanStr(currentCard.word);
     const todayStr = getTodayStr();
     const isTodayMode = reviewMode === 'today';
+    const isNewMode = reviewMode === 'new';
     const currentBox = currentCard.box || 1;
     const currentErrors = currentCard.error_count || 0;
 
@@ -278,7 +285,23 @@ export default function App() {
           msg: `🎉 完全正確！(今日加固確認，維持在 Box ${currentBox})`,
           explanation: '回答精準，語塊印象再次加深！'
         });
+      } else if (isNewMode) {
+        // 新詞初次答對 -> 晉升至 Box 2，正式進入 SRS 間隔排程
+        const nextBox = 2;
+        setFeedback({ 
+          isCorrect: true, 
+          msg: `🌱 新詞初次學習成功！(晉升至 Box ${nextBox}，進入間隔複習週期)`,
+          explanation: '初次記憶建立成功！4天後將再次進行間隔複習。'
+        });
+        await supabase.from('flashcards').update({ 
+          box: nextBox, 
+          last_review_date: todayStr,
+          error_count: 0 
+        }).eq('id', currentCard.id);
+
+        setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr, error_count: 0 } : c));
       } else {
+        // 到期複習正常晉升
         const nextBox = Math.min(currentBox + 1, 5);
         const newErrorCount = Math.max(0, currentErrors - 1);
         setFeedback({ 
@@ -326,9 +349,22 @@ export default function App() {
         if (isTodayMode) {
           setFeedback({ 
             isCorrect: true, 
-            msg: `✨ 很好！這也是一種可接受的道地說法！(今日加固確認，維持在 Box ${currentBox})`,
+            msg: `✨ 很好！這也是一種可接受的道地說法！(維持在 Box ${currentBox})`,
             explanation: cleanMarkdownSymbols(result.explanation)
           });
+        } else if (isNewMode) {
+          const nextBox = 2;
+          setFeedback({ 
+            isCorrect: true, 
+            msg: `🌱 新詞初次學習成功！(晉升至 Box ${nextBox})`,
+            explanation: cleanMarkdownSymbols(result.explanation)
+          });
+          await supabase.from('flashcards').update({ 
+            box: nextBox, 
+            last_review_date: todayStr,
+            error_count: 0 
+          }).eq('id', currentCard.id);
+          setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr, error_count: 0 } : c));
         } else {
           const nextBox = Math.min(currentBox + 1, 5);
           const newErrorCount = Math.max(0, currentErrors - 1);
@@ -351,6 +387,20 @@ export default function App() {
             msg: `❌ 目標答案是: "${currentCard.word}" (今日加固確認，維持在 Box ${currentBox})`,
             explanation: cleanMarkdownSymbols(result.explanation)
           });
+        } else if (isNewMode) {
+          // 新詞初次答錯 -> 留在 Box 1，error_count = 1，明天必須進行第一次複習
+          const nextBox = 1;
+          setFeedback({ 
+            isCorrect: false, 
+            msg: `❌ 目標答案是: "${currentCard.word}" (已收錄至 Box 1，標記為易錯單字)`,
+            explanation: cleanMarkdownSymbols(result.explanation)
+          });
+          await supabase.from('flashcards').update({ 
+            box: nextBox, 
+            last_review_date: todayStr,
+            error_count: 1 
+          }).eq('id', currentCard.id);
+          setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr, error_count: 1 } : c));
         } else {
           const nextBox = currentBox > 3 ? 3 : 1;
           const newErrorCount = currentErrors + 1;
@@ -371,16 +421,28 @@ export default function App() {
       if (isTodayMode) {
         setFeedback({ 
           isCorrect: false, 
-          msg: `❌ 目標答案是: "${currentCard.word}" (今日加固確認，維持在 Box ${currentBox})`,
+          msg: `❌ 目標答案是: "${currentCard.word}" (維持在 Box ${currentBox})`,
           explanation: '拼寫與目標設定不一致。'
         });
+      } else if (isNewMode) {
+        setFeedback({ 
+          isCorrect: false, 
+          msg: `❌ 目標答案是: "${currentCard.word}" (已收錄至 Box 1)`,
+          explanation: '拼寫與目標設定不一致。'
+        });
+        await supabase.from('flashcards').update({ 
+          box: 1, 
+          last_review_date: todayStr,
+          error_count: 1 
+        }).eq('id', currentCard.id);
+        setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: 1, last_review_date: todayStr, error_count: 1 } : c));
       } else {
         const nextBox = currentBox > 3 ? 3 : 1;
         const newErrorCount = currentErrors + 1;
         setFeedback({ 
           isCorrect: false, 
-          msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox}，已加入易錯優先清單)`,
-          explanation: '拼寫與目標設定不一致。（系統已採用本機標準判定）'
+          msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
+          explanation: '拼寫與目標設定不一致。（已採用標準判定）'
         });
         await supabase.from('flashcards').update({ 
           box: nextBox, 
@@ -519,7 +581,7 @@ export default function App() {
 
       if (data && data.length > 0) {
         setCards([data[0], ...cards]);
-        alert(`✅ 成功將「${coachTargetWord}」收錄至 Box 1 字卡庫！`);
+        alert(`✅ 成功將「${coachTargetWord}」收錄至新詞庫！`);
       }
     } catch (err) {
       alert(`收錄失敗: ${err.message}`);
@@ -609,7 +671,7 @@ export default function App() {
       setNewMeaning('');
       setNewSentence('');
       setNewPronun('');
-      alert('✅ 單字新增成功！');
+      alert('✅ 單字新增成功！已加入「🌱 學習新詞」庫。');
       setActiveTab('library');
     } else {
       alert(`新增失敗: ${error?.message}`);
@@ -626,11 +688,12 @@ export default function App() {
     }
   };
 
-  // 🎯 統計「今日待複習 (Due)」與「今日已複習 (Reviewed)」計算
+  // 🎯 精確統計「待複習 (Due)」、「未學習 (New)」、「已複習 (Reviewed)」
   const todayStr = getTodayStr();
   const stats = {
     total: cards.length,
     todayDue: 0,
+    newCards: 0,
     todayReviewed: 0,
     boxCounts: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
     boxDueCounts: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
@@ -641,26 +704,22 @@ export default function App() {
     const b = c.box || 1;
     stats.boxCounts[b] = (stats.boxCounts[b] || 0) + 1;
 
-    // 今日已複習判定
+    // 今日已複習
     if (c.last_review_date === todayStr) {
       stats.todayCounts[b] = (stats.todayCounts[b] || 0) + 1;
       stats.todayReviewed += 1;
     }
 
-    // ⏰ 今日待複習判定（從未複習過 或 相差天數 >= 間隔天數）
-    let isDue = false;
+    // 未學習新詞 (無答題記錄)
     if (!c.last_review_date) {
-      isDue = true;
+      stats.newCards += 1;
     } else {
+      // ⏰ 到期複習 (有答題記錄 + 間隔天數已到)
       const diffDays = Math.floor((new Date(todayStr) - new Date(c.last_review_date)) / (1000 * 3600 * 24));
       if (diffDays >= (INTERVALS[b] || 1)) {
-        isDue = true;
+        stats.todayDue += 1;
+        stats.boxDueCounts[b] = (stats.boxDueCounts[b] || 0) + 1;
       }
-    }
-
-    if (isDue) {
-      stats.todayDue += 1;
-      stats.boxDueCounts[b] = (stats.boxDueCounts[b] || 0) + 1;
     }
   });
 
@@ -750,6 +809,7 @@ export default function App() {
           <p className="text-[11px] text-slate-400">
             總字庫: <span className="text-indigo-400 font-bold">{stats.total}</span> | 
             待複習: <span className="text-rose-400 font-bold">{stats.todayDue}</span> | 
+            未學習: <span className="text-amber-400 font-bold">{stats.newCards}</span> | 
             已複習: <span className="text-emerald-400 font-bold">{stats.todayReviewed}</span>
           </p>
         </div>
@@ -799,23 +859,34 @@ export default function App() {
         {/* 分頁 1: 間隔複習 */}
         {activeTab === 'review' && (
           <div>
-            {/* 複習模式切換按鈕 */}
-            <div className="flex justify-center gap-2 mb-4">
+            {/* 三大模式切換按鈕 */}
+            <div className="flex justify-center gap-1.5 mb-4">
               <button
                 type="button"
                 onClick={() => handleModeChange('due')}
-                className={`px-4 py-1.5 rounded-full font-bold text-xs transition-all ${
+                className={`px-3 py-1.5 rounded-full font-bold text-xs transition-all ${
                   reviewMode === 'due'
                     ? 'bg-indigo-600 text-white shadow-lg'
                     : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
                 }`}
               >
-                ⏰ 到期複習 ({stats.todayDue})
+                ⏰ 待複習 ({stats.todayDue})
+              </button>
+              <button
+                type="button"
+                onClick={() => handleModeChange('new')}
+                className={`px-3 py-1.5 rounded-full font-bold text-xs transition-all ${
+                  reviewMode === 'new'
+                    ? 'bg-amber-600 text-white shadow-lg'
+                    : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                🌱 學習新詞 ({stats.newCards})
               </button>
               <button
                 type="button"
                 onClick={() => handleModeChange('today')}
-                className={`px-4 py-1.5 rounded-full font-bold text-xs transition-all ${
+                className={`px-3 py-1.5 rounded-full font-bold text-xs transition-all ${
                   reviewMode === 'today'
                     ? 'bg-emerald-600 text-white shadow-lg'
                     : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
@@ -831,10 +902,10 @@ export default function App() {
                   <div className="flex justify-between items-center text-xs text-slate-400">
                     <div className="flex items-center gap-2">
                       <span className="px-2 py-0.5 bg-indigo-950 text-indigo-400 border border-indigo-800/50 rounded-md font-bold">
-                        Box {currentCard.box || 1}
+                        {reviewMode === 'new' ? '🌱 未學習' : `Box ${currentCard.box || 1}`}
                       </span>
                       {/* 🔥 錯題次數提示標籤 */}
-                      {(currentCard.error_count || 0) > 0 && (
+                      {(currentCard.error_count || 0) > 0 && reviewMode !== 'new' && (
                         <span className="px-2 py-0.5 bg-rose-950 text-rose-400 border border-rose-800/50 rounded-md font-bold flex items-center gap-0.5 text-[11px]">
                           <Flame size={12} /> 易錯加強 (錯 {currentCard.error_count} 次)
                         </span>
@@ -914,13 +985,29 @@ export default function App() {
             ) : (
               <div className="text-center py-12 text-slate-500 space-y-3">
                 <Sparkles size={40} className="mx-auto text-indigo-400/50" />
-                <p>{reviewMode === 'today' ? '今天還沒有複習過的字卡喔！先切換到「⏰ 到期複習」開始刷題吧。' : '太棒了！今日所有到期字卡皆已複習完畢。'}</p>
-                <button 
-                  onClick={() => reviewMode === 'today' ? handleModeChange('due') : setActiveTab('add')}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow"
-                >
-                  {reviewMode === 'today' ? '前往到期複習' : '前往新增單字'}
-                </button>
+                <p>
+                  {reviewMode === 'new' && '太棒了！所有單字皆已學習過，沒有未學習的新詞。'}
+                  {reviewMode === 'today' && '今天還沒有複習過的字卡喔！先前往「待複習」或「學習新詞」開始吧。'}
+                  {reviewMode === 'due' && '🎉 太棒了！今日所有到期字卡皆已複習完畢。'}
+                </p>
+                <div className="flex justify-center gap-2">
+                  {reviewMode !== 'due' && (
+                    <button 
+                      onClick={() => handleModeChange('due')}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow"
+                    >
+                      前往待複習 ({stats.todayDue})
+                    </button>
+                  )}
+                  {reviewMode !== 'new' && stats.newCards > 0 && (
+                    <button 
+                      onClick={() => handleModeChange('new')}
+                      className="px-4 py-2 bg-amber-600 text-white rounded-xl text-xs font-bold shadow"
+                    >
+                      學習新詞 ({stats.newCards})
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -986,7 +1073,7 @@ export default function App() {
                         className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-amber-300 text-xs font-bold rounded-xl border border-amber-500/30 flex items-center justify-center gap-1.5 transition"
                       >
                         <BookmarkPlus size={16} />
-                        一鍵將「{coachTargetWord}」加入字卡庫 (Box 1)
+                        一鍵將「{coachTargetWord}」加入字卡庫
                       </button>
                     )}
                   </div>
@@ -1056,7 +1143,7 @@ export default function App() {
                         )}
                       </div>
                       <span className="px-2 py-0.5 bg-indigo-950 text-indigo-400 border border-indigo-800/40 rounded text-[10px] font-bold">
-                        Box {card.box || 1}
+                        {!card.last_review_date ? '未學習' : `Box ${card.box || 1}`}
                       </span>
                     </div>
 
@@ -1161,7 +1248,7 @@ export default function App() {
               type="submit"
               className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 font-bold rounded-xl shadow-lg transition"
             >
-              確認收錄至 Box 1
+              確認收錄至新詞庫
             </button>
           </form>
         )}
@@ -1178,7 +1265,7 @@ export default function App() {
         </button>
         <button 
           onClick={() => setActiveTab('coach')}
-          className={`py-2 flex flex-col items-center gap-1 rounded-xl text-xs font-semibold ${activeTab === 'coach' ? 'text-indigo-400 bg-slate-800/60' : 'text-slate-400'}`}
+          className={`py-2 flex flex-col items-center gap-1 rounded-xl text-xs font-semibold ${activeTab === 'coach' ? 'text-indigo-400 bg-slate-800/60' : 'text-slate-400'}`};
         >
           <MessageSquareText size={16} />
           教練
