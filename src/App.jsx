@@ -44,6 +44,40 @@ export default function App() {
   const [newPronun, setNewPronun] = useState('');
   const [isAutoFilling, setIsAutoFilling] = useState(false);
 
+  // ⏰ 每日 09:00 與 14:00 學習定時提醒
+  useEffect(() => {
+    // 請求瀏覽器系統通知權限
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  
+    let lastNotifiedTime = '';
+  
+    const timer = setInterval(() => {
+      const now = new Date();
+      const hours = now.getHours();
+      const minutes = now.getMinutes();
+      const timeKey = `${now.toISOString().split('T')[0]}_${hours}`;
+  
+      // 檢查是否為 09:00 或 14:00
+      if ((hours === 9 || hours === 14) && minutes === 0) {
+        if (lastNotifiedTime !== timeKey) {
+          lastNotifiedTime = timeKey;
+          const msg = `🔔 學習時間到了！現在是 ${hours}:00，該上線複習你的間隔記憶字卡囉！`;
+          
+          // 優先使用系統桌面推播通知，若無權限則彈出視窗
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('英文大師 SRS 學習提醒', { body: msg });
+          } else {
+            alert(msg);
+          }
+        }
+      }
+    }, 30000); // 每 30 秒檢查一次
+  
+    return () => clearInterval(timer);
+  }, []);
+
   const fileInputRef = useRef(null);
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
 
@@ -123,8 +157,7 @@ export default function App() {
     }
   };
 
-  // 3. 挑選下一張字卡 (重點功能：按錯誤次數降序排列，錯越多次越優先出現！)
-  // 3. 挑選下一張字卡 (修復：今日已刷採隨機均勻輪調，到期複習採錯題加權)
+  // 3. 挑選下一張字卡（新週期：1 / 4 / 7 / 14 / 30 天）
   const pickNextCard = (cardList, mode = reviewMode) => {
     const list = cardList || cards;
     if (!list || list.length === 0) {
@@ -132,43 +165,41 @@ export default function App() {
       setClozeSentence('');
       return;
     }
-
+  
     const todayStr = getTodayStr();
     let targetList = [];
-
+  
     if (mode === 'today') {
-      // 模式 1：今日已刷過/學習過的卡片
+      // 今日已刷模式
       targetList = list.filter(card => card.last_review_date === todayStr);
     } else {
-      // 模式 2：標準 SRS Leitner 5 格到期卡片
+      // SRS Leitner 5 格到期卡片
       targetList = list.filter(card => {
         if (!card.last_review_date) return true;
         const diffDays = Math.floor((new Date(todayStr) - new Date(card.last_review_date)) / (1000 * 3600 * 24));
-        const intervals = { 1: 1, 2: 3, 3: 7, 4: 30, 5: 90 };
+        // 🎯 更新後的間隔天數：1天 / 4天 / 7天 / 14天 / 30天
+        const intervals = { 1: 1, 2: 4, 3: 7, 4: 14, 5: 30 };
         return diffDays >= (intervals[card.box] || 1);
       });
     }
-
+  
     if (targetList.length === 0) {
       setCurrentCard(null);
       setClozeSentence(mode === 'today' ? '🎉 今日尚未有已複習的字卡！' : '🎉 所有到期字卡皆已複習完畢！');
       return;
     }
-
+  
     let selectedCard = null;
-
+  
     if (mode === 'today') {
-      // 🎯 今日已刷模式：純隨機輪調，並排除當前卡片（避免一直卡在同一題）
       const candidates = targetList.length > 1 
         ? targetList.filter(c => c.id !== currentCard?.id)
         : targetList;
       selectedCard = candidates[Math.floor(Math.random() * candidates.length)];
     } else {
-      // 🎯 到期複習模式：按錯誤次數降序排列，錯越多次越優先出現！
       const sortedList = [...targetList].sort((a, b) => (b.error_count || 0) - (a.error_count || 0));
       const maxErrors = sortedList[0].error_count || 0;
       
-      // 取出錯誤次數最高的一批卡片，若有複數張則排除上一張後隨機抽
       let topCandidates = sortedList.filter(c => (c.error_count || 0) === maxErrors);
       if (topCandidates.length > 1 && currentCard) {
         const withoutCurrent = topCandidates.filter(c => c.id !== currentCard.id);
@@ -180,8 +211,7 @@ export default function App() {
     setCurrentCard(selectedCard);
     setUserInput('');
     setFeedback(null);
-
-    // 句子挖空處理
+  
     if (selectedCard.sentence && selectedCard.word) {
       const regex = new RegExp(`\\b${selectedCard.word}\\b`, 'gi');
       const blanked = selectedCard.sentence.replace(regex, '_______');
