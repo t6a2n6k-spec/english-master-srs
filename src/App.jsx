@@ -173,81 +173,85 @@ export default function App() {
 
   // 5. 【間隔複習】AI 深度檢測作答
   const handleCheckAnswer = async () => {
-    if (!userInput.trim() || !currentCard || isCheckingCloze) return;
+  if (!userInput.trim() || !currentCard || isCheckingCloze) return;
 
-    setIsCheckingCloze(true);
-    const inputClean = userInput.trim().toLowerCase();
-    const targetClean = currentCard.word.trim().toLowerCase();
-    const todayStr = new Date().toISOString().split('T')[0];
+  setIsCheckingCloze(true);
+  // 本地預處理：去除標點符號與首尾空格
+  const cleanStr = (s) => (s || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
+  const inputClean = cleanStr(userInput);
+  const targetClean = cleanStr(currentCard.word);
+  const todayStr = new Date().toISOString().split('T')[0];
 
-    if (inputClean === targetClean) {
-      const nextBox = Math.min((currentCard.box || 1) + 1, 5);
-      confetti({ particleCount: 60, spread: 60, origin: { y: 0.8 } });
+  // 1. 本地精確比對通過 -> 完全不耗費任何 API！
+  if (inputClean === targetClean) {
+    const nextBox = Math.min((currentCard.box || 1) + 1, 5);
+    confetti({ particleCount: 60, spread: 60, origin: { y: 0.8 } });
+    setFeedback({ 
+      isCorrect: true, 
+      msg: `🎉 完全正確！成功升級至 Box ${nextBox}`,
+      explanation: '回答精準，語塊使用非常道地！'
+    });
+
+    await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
+    setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+    setIsCheckingCloze(false);
+    return;
+  }
+
+  // 2. 不一致時呼叫 AI 診斷（加入超額 429 容錯機制）
+  try {
+    const prompt = `
+    你是一位專業且具同理心的美語教練，請診斷學生的填空作答：
+    - 完整原句: "${currentCard.sentence}"
+    - 原定目標語塊: "${currentCard.word}" (${currentCard.meaning})
+    - 學生填入的語彙: "${userInput.trim()}"
+
+    請判斷學生填入的語彙是否在該句子中完全通順且道地？
+    請直接回傳嚴格的 JSON 格式（不要使用 Markdown 標籤）：
+    {
+      "is_acceptable": true 或 false,
+      "explanation": "繁體中文簡明解析"
+    }
+    `;
+
+    const rawText = await callGemini(prompt);
+    const cleaned = rawText.replace(/```json|```/g, '').trim();
+    const result = JSON.parse(cleaned);
+
+    let nextBox = currentCard.box || 1;
+    if (result.is_acceptable) {
+      nextBox = Math.min(nextBox + 1, 5);
+      confetti({ particleCount: 50, spread: 50, origin: { y: 0.8 } });
       setFeedback({ 
         isCorrect: true, 
-        msg: `🎉 完全正確！成功升級至 Box ${nextBox}`,
-        explanation: '回答精準，語塊使用非常道地！'
+        msg: `✨ 很好！這也是一種可接受的道地說法！(升至 Box ${nextBox})`,
+        explanation: result.explanation
       });
-
-      await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-      setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
-      setIsCheckingCloze(false);
-      return;
-    }
-
-    try {
-      const prompt = `
-      你是一位專業且具同理心的美語教練，請診斷學生的填空作答：
-      - 完整原句: "${currentCard.sentence}"
-      - 原定目標語塊: "${currentCard.word}" (${currentCard.meaning})
-      - 學生填入的語彙: "${userInput.trim()}"
-
-      請判斷學生填入的語彙是否在該句子中完全通順且道地？如果不行，請詳細指出「為什麼這個語境不能這樣用」（例如：搭配詞 Collocation 不自然、語意偏差、介系詞搭配錯誤等）。
-      
-      請直接回傳嚴格的 JSON 格式（不要使用 Markdown 標籤，不要有 # 或 * 符號）：
-      {
-        "is_acceptable": true 或 false,
-        "explanation": "繁體中文簡明解析"
-      }
-      `;
-
-      const rawText = await callGemini(prompt);
-      const cleaned = rawText.replace(/```json|```/g, '').trim();
-      const result = JSON.parse(cleaned);
-
-      let nextBox = currentCard.box || 1;
-      if (result.is_acceptable) {
-        nextBox = Math.min(nextBox + 1, 5);
-        confetti({ particleCount: 50, spread: 50, origin: { y: 0.8 } });
-        setFeedback({ 
-          isCorrect: true, 
-          msg: `✨ 很好！這也是一種可接受的道地說法！(升至 Box ${nextBox})`,
-          explanation: cleanMarkdownSymbols(result.explanation)
-        });
-      } else {
-        nextBox = nextBox > 3 ? 3 : 1;
-        setFeedback({ 
-          isCorrect: false, 
-          msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
-          explanation: cleanMarkdownSymbols(result.explanation)
-        });
-      }
-
-      await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-      setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
-    } catch (err) {
-      const nextBox = (currentCard.box || 1) > 3 ? 3 : 1;
+    } else {
+      nextBox = nextBox > 3 ? 3 : 1;
       setFeedback({ 
         isCorrect: false, 
-        msg: `❌ 正確答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
-        explanation: '拼寫與目標設定不一致。'
+        msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
+        explanation: result.explanation
       });
-      await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-      setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
-    } finally {
-      setIsCheckingCloze(false);
     }
-  };
+
+    await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
+    setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+  } catch (err) {
+    // API 超額（429）或網路中斷時的降級保護
+    const nextBox = (currentCard.box || 1) > 3 ? 3 : 1;
+    setFeedback({ 
+      isCorrect: false, 
+      msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
+      explanation: '拼寫與目標設定不一致。（若短時間複習過快，系統已自動切換為本機標準判定）'
+    });
+    await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
+    setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+  } finally {
+    setIsCheckingCloze(false);
+  }
+};
 
   // 6. 語音朗讀發音
   const playSpeech = (text) => {
