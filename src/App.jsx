@@ -16,7 +16,7 @@ export default function App() {
 
   // 分頁狀態：'review' | 'coach' | 'library' | 'add'
   const [activeTab, setActiveTab] = useState('review'); 
-  const [reviewMode, setReviewMode] = useState('due'); // 'due' (SRS到期) | 'today' (今日已刷)
+  const [reviewMode, setReviewMode] = useState('due'); // 'due' (SRS到期) | 'today' (今日加固)
   const [cards, setCards] = useState([]);
   const [currentCard, setCurrentCard] = useState(null);
   const [clozeSentence, setClozeSentence] = useState('');
@@ -67,7 +67,7 @@ export default function App() {
     }
   }, [user]);
 
-  // 突破 1000 筆限制 + 鎖定當前題目不跳轉
+  // 突破 1000 筆限制 + 鎖定題目防跳轉
   const fetchCards = async () => {
     setLoading(true);
     let allCards = [];
@@ -99,7 +99,7 @@ export default function App() {
 
       setCards(allCards);
 
-      // 只有在完全沒有選題時才初次抽題
+      // 只有在目前完全沒有選題時才初次抽題
       setCurrentCard((prevCard) => {
         if (!prevCard && allCards.length > 0) {
           pickNextCard(allCards, reviewMode);
@@ -114,7 +114,7 @@ export default function App() {
     }
   };
 
-  // 3. 挑選下一張待複習字卡 (支援 SRS 到期 vs 今日已刷 模式)
+  // 3. 挑選下一張待複習字卡 (支援 SRS 到期 vs 今日加固 模式)
   const pickNextCard = (cardList, mode = reviewMode) => {
     const list = cardList || cards;
     if (!list || list.length === 0) {
@@ -127,7 +127,7 @@ export default function App() {
     let targetList = [];
 
     if (mode === 'today') {
-      // 模式 1：今日已刷過/複習過的卡片
+      // 模式 1：今日已刷過/學習過的卡片
       targetList = list.filter(card => card.last_review_date === todayStr);
     } else {
       // 模式 2：標準 SRS Leitner 5 格到期重複卡片
@@ -172,7 +172,7 @@ export default function App() {
     if (!GEMINI_API_KEY) {
       throw new Error("請在 .env 檔案中設定 VITE_GEMINI_API_KEY！");
     }
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
@@ -190,7 +190,7 @@ export default function App() {
       .trim();
   };
 
-  // 5. 【間隔複習】AI 深度檢測作答 (含本機模糊比對 + API 超額防護)
+  // 5. 【間隔複習】作答檢查 (重點：今日模式不變更 Box，僅作確認)
   const handleCheckAnswer = async () => {
     if (!userInput.trim() || !currentCard || isCheckingCloze) return;
 
@@ -199,24 +199,37 @@ export default function App() {
     const inputClean = cleanStr(userInput);
     const targetClean = cleanStr(currentCard.word);
     const todayStr = new Date().toISOString().split('T')[0];
+    const isTodayMode = reviewMode === 'today';
+    const currentBox = currentCard.box || 1;
 
-    // 本地精確比對成功 -> 0 消耗 API
+    // 1. 本地精確比對成功 -> 0 API 消耗
     if (inputClean === targetClean) {
-      const nextBox = Math.min((currentCard.box || 1) + 1, 5);
       confetti({ particleCount: 60, spread: 60, origin: { y: 0.8 } });
-      setFeedback({ 
-        isCorrect: true, 
-        msg: `🎉 完全正確！成功升級至 Box ${nextBox}`,
-        explanation: '回答精準，語塊使用非常道地！'
-      });
 
-      await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-      setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+      if (isTodayMode) {
+        // 今日模式：不升級，僅作確認加固
+        setFeedback({ 
+          isCorrect: true, 
+          msg: `🎉 完全正確！(今日加固確認，維持在 Box ${currentBox})`,
+          explanation: '回答精準，語塊印象再次加深！'
+        });
+      } else {
+        // SRS 到期模式：正常晉升
+        const nextBox = Math.min(currentBox + 1, 5);
+        setFeedback({ 
+          isCorrect: true, 
+          msg: `🎉 完全正確！成功升級至 Box ${nextBox}`,
+          explanation: '回答精準，語塊使用非常道地！'
+        });
+        await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
+        setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+      }
+
       setIsCheckingCloze(false);
       return;
     }
 
-    // 本地比對不一致 -> 呼叫 AI 分析 (含 429 容錯降級)
+    // 2. 本地比對不一致 -> 呼叫 AI 深度診斷 (含超額容錯降級)
     try {
       const prompt = `
       你是一位專業且具同理心的美語教練，請診斷學生的填空作答：
@@ -237,36 +250,60 @@ export default function App() {
       const cleaned = rawText.replace(/```json|```/g, '').trim();
       const result = JSON.parse(cleaned);
 
-      let nextBox = currentCard.box || 1;
       if (result.is_acceptable) {
-        nextBox = Math.min(nextBox + 1, 5);
         confetti({ particleCount: 50, spread: 50, origin: { y: 0.8 } });
+        if (isTodayMode) {
+          setFeedback({ 
+            isCorrect: true, 
+            msg: `✨ 很好！這也是一種可接受的道地說法！(今日加固確認，維持在 Box ${currentBox})`,
+            explanation: cleanMarkdownSymbols(result.explanation)
+          });
+        } else {
+          const nextBox = Math.min(currentBox + 1, 5);
+          setFeedback({ 
+            isCorrect: true, 
+            msg: `✨ 很好！這也是一種可接受的道地說法！(升至 Box ${nextBox})`,
+            explanation: cleanMarkdownSymbols(result.explanation)
+          });
+          await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
+          setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+        }
+      } else {
+        if (isTodayMode) {
+          // 今日模式：答錯也不降級
+          setFeedback({ 
+            isCorrect: false, 
+            msg: `❌ 目標答案是: "${currentCard.word}" (今日加固確認，維持在 Box ${currentBox})`,
+            explanation: cleanMarkdownSymbols(result.explanation)
+          });
+        } else {
+          const nextBox = currentBox > 3 ? 3 : 1;
+          setFeedback({ 
+            isCorrect: false, 
+            msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
+            explanation: cleanMarkdownSymbols(result.explanation)
+          });
+          await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
+          setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+        }
+      }
+    } catch (err) {
+      if (isTodayMode) {
         setFeedback({ 
-          isCorrect: true, 
-          msg: `✨ 很好！這也是一種可接受的道地說法！(升至 Box ${nextBox})`,
-          explanation: cleanMarkdownSymbols(result.explanation)
+          isCorrect: false, 
+          msg: `❌ 目標答案是: "${currentCard.word}" (今日加固確認，維持在 Box ${currentBox})`,
+          explanation: '拼寫與目標設定不一致。'
         });
       } else {
-        nextBox = nextBox > 3 ? 3 : 1;
+        const nextBox = currentBox > 3 ? 3 : 1;
         setFeedback({ 
           isCorrect: false, 
           msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
-          explanation: cleanMarkdownSymbols(result.explanation)
+          explanation: '拼寫與目標設定不一致。（若短時間複習過快，系統已自動切換為本機標準判定）'
         });
+        await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
+        setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
       }
-
-      await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-      setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
-    } catch (err) {
-      // API 超額 (429) 或離線時的降級保護
-      const nextBox = (currentCard.box || 1) > 3 ? 3 : 1;
-      setFeedback({ 
-        isCorrect: false, 
-        msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
-        explanation: '拼寫與目標設定不一致。（若短時間複習過快，系統已自動切換為本機標準判定）'
-      });
-      await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-      setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
     } finally {
       setIsCheckingCloze(false);
     }
