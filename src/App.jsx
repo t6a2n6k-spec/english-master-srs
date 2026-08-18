@@ -4,7 +4,7 @@ import confetti from 'canvas-confetti';
 import { 
   Volume2, CheckCircle2, XCircle, Sparkles, PlusCircle, 
   RefreshCw, Bell, LogOut, MessageSquareText, Send, BookmarkPlus,
-  Upload, Wand2, Database, Search, Trash2
+  Upload, Wand2, Database, Search, Trash2, Flame
 } from 'lucide-react';
 
 export default function App() {
@@ -47,6 +47,15 @@ export default function App() {
   const fileInputRef = useRef(null);
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
 
+  // 取得本地時區的 YYYY-MM-DD (徹底解決跨午夜時區延遲 Bug)
+  const getTodayStr = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   // 1. 監聽登入狀態
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -67,7 +76,7 @@ export default function App() {
     }
   }, [user]);
 
-  // 突破 1000 筆限制 + 鎖定題目防跳轉
+  // 循環分頁抓取全部資料
   const fetchCards = async () => {
     setLoading(true);
     let allCards = [];
@@ -99,7 +108,7 @@ export default function App() {
 
       setCards(allCards);
 
-      // 只有在目前完全沒有選題時才初次抽題
+      // 只有在目前完全沒有選題時才抽題
       setCurrentCard((prevCard) => {
         if (!prevCard && allCards.length > 0) {
           pickNextCard(allCards, reviewMode);
@@ -114,7 +123,7 @@ export default function App() {
     }
   };
 
-  // 3. 挑選下一張待複習字卡 (支援 SRS 到期 vs 今日加固 模式)
+  // 3. 挑選下一張字卡 (重點功能：按錯誤次數降序排列，錯越多次越優先出現！)
   const pickNextCard = (cardList, mode = reviewMode) => {
     const list = cardList || cards;
     if (!list || list.length === 0) {
@@ -123,14 +132,12 @@ export default function App() {
       return;
     }
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getTodayStr();
     let targetList = [];
 
     if (mode === 'today') {
-      // 模式 1：今日已刷過/學習過的卡片
       targetList = list.filter(card => card.last_review_date === todayStr);
     } else {
-      // 模式 2：標準 SRS Leitner 5 格到期重複卡片
       targetList = list.filter(card => {
         if (!card.last_review_date) return true;
         const diffDays = Math.floor((new Date(todayStr) - new Date(card.last_review_date)) / (1000 * 3600 * 24));
@@ -145,7 +152,13 @@ export default function App() {
       return;
     }
 
-    const selectedCard = targetList[Math.floor(Math.random() * targetList.length)];
+    // 🎯 核心優先度排序：錯誤次數越多 (error_count 越大) 排越前面！
+    const sortedList = [...targetList].sort((a, b) => (b.error_count || 0) - (a.error_count || 0));
+
+    // 取出錯誤次數最高的一批卡片（若有多張同分，從中隨機選一張增加隨機感）
+    const maxErrors = sortedList[0].error_count || 0;
+    const topCandidates = sortedList.filter(c => (c.error_count || 0) === maxErrors);
+    const selectedCard = topCandidates[Math.floor(Math.random() * topCandidates.length)];
     
     setCurrentCard(selectedCard);
     setUserInput('');
@@ -182,15 +195,11 @@ export default function App() {
     return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   };
 
-  // 輔助函式：清理 Markdown 符號
   const cleanMarkdownSymbols = (text) => {
-    return text
-      .replace(/[#*`]/g, '')
-      .replace(/\n\s*\n/g, '\n\n')
-      .trim();
+    return text.replace(/[#*`]/g, '').replace(/\n\s*\n/g, '\n\n').trim();
   };
 
-  // 5. 【間隔複習】作答檢查 (重點：今日模式不變更 Box，僅作確認)
+  // 5. 【間隔複習】作答檢查 (包含錯題計數加減與模式隔離)
   const handleCheckAnswer = async () => {
     if (!userInput.trim() || !currentCard || isCheckingCloze) return;
 
@@ -198,38 +207,44 @@ export default function App() {
     const cleanStr = (s) => (s || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
     const inputClean = cleanStr(userInput);
     const targetClean = cleanStr(currentCard.word);
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getTodayStr();
     const isTodayMode = reviewMode === 'today';
     const currentBox = currentCard.box || 1;
+    const currentErrors = currentCard.error_count || 0;
 
-    // 1. 本地精確比對成功 -> 0 API 消耗
+    // 1. 本地完全匹配成功
     if (inputClean === targetClean) {
       confetti({ particleCount: 60, spread: 60, origin: { y: 0.8 } });
 
       if (isTodayMode) {
-        // 今日模式：不升級，僅作確認加固
         setFeedback({ 
           isCorrect: true, 
           msg: `🎉 完全正確！(今日加固確認，維持在 Box ${currentBox})`,
           explanation: '回答精準，語塊印象再次加深！'
         });
       } else {
-        // SRS 到期模式：正常晉升
         const nextBox = Math.min(currentBox + 1, 5);
+        const newErrorCount = Math.max(0, currentErrors - 1); // 答對時錯題權重 -1
         setFeedback({ 
           isCorrect: true, 
           msg: `🎉 完全正確！成功升級至 Box ${nextBox}`,
-          explanation: '回答精準，語塊使用非常道地！'
+          explanation: newErrorCount === 0 && currentErrors > 0 ? '恭喜攻克易錯語塊！已解除優先標記。' : '回答精準，語塊使用非常道地！'
         });
-        await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-        setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+
+        await supabase.from('flashcards').update({ 
+          box: nextBox, 
+          last_review_date: todayStr,
+          error_count: newErrorCount 
+        }).eq('id', currentCard.id);
+
+        setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr, error_count: newErrorCount } : c));
       }
 
       setIsCheckingCloze(false);
       return;
     }
 
-    // 2. 本地比對不一致 -> 呼叫 AI 深度診斷 (含超額容錯降級)
+    // 2. 本地不一致 -> 呼叫 AI 判定
     try {
       const prompt = `
       你是一位專業且具同理心的美語教練，請診斷學生的填空作答：
@@ -260,17 +275,21 @@ export default function App() {
           });
         } else {
           const nextBox = Math.min(currentBox + 1, 5);
+          const newErrorCount = Math.max(0, currentErrors - 1);
           setFeedback({ 
             isCorrect: true, 
             msg: `✨ 很好！這也是一種可接受的道地說法！(升至 Box ${nextBox})`,
             explanation: cleanMarkdownSymbols(result.explanation)
           });
-          await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-          setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+          await supabase.from('flashcards').update({ 
+            box: nextBox, 
+            last_review_date: todayStr,
+            error_count: newErrorCount 
+          }).eq('id', currentCard.id);
+          setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr, error_count: newErrorCount } : c));
         }
       } else {
         if (isTodayMode) {
-          // 今日模式：答錯也不降級
           setFeedback({ 
             isCorrect: false, 
             msg: `❌ 目標答案是: "${currentCard.word}" (今日加固確認，維持在 Box ${currentBox})`,
@@ -278,13 +297,18 @@ export default function App() {
           });
         } else {
           const nextBox = currentBox > 3 ? 3 : 1;
+          const newErrorCount = currentErrors + 1; // 答錯時錯題次數 +1 (大幅提升未來優先度)
           setFeedback({ 
             isCorrect: false, 
-            msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
+            msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox}，已加入易錯優先清單)`,
             explanation: cleanMarkdownSymbols(result.explanation)
           });
-          await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-          setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+          await supabase.from('flashcards').update({ 
+            box: nextBox, 
+            last_review_date: todayStr,
+            error_count: newErrorCount 
+          }).eq('id', currentCard.id);
+          setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr, error_count: newErrorCount } : c));
         }
       }
     } catch (err) {
@@ -296,13 +320,18 @@ export default function App() {
         });
       } else {
         const nextBox = currentBox > 3 ? 3 : 1;
+        const newErrorCount = currentErrors + 1;
         setFeedback({ 
           isCorrect: false, 
-          msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
-          explanation: '拼寫與目標設定不一致。（若短時間複習過快，系統已自動切換為本機標準判定）'
+          msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox}，已加入易錯優先清單)`,
+          explanation: '拼寫與目標設定不一致。（系統已採用本機標準判定）'
         });
-        await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-        setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+        await supabase.from('flashcards').update({ 
+          box: nextBox, 
+          last_review_date: todayStr,
+          error_count: newErrorCount 
+        }).eq('id', currentCard.id);
+        setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr, error_count: newErrorCount } : c));
       }
     } finally {
       setIsCheckingCloze(false);
@@ -426,7 +455,8 @@ export default function App() {
         sentence: coachScenario ? `情境: ${coachScenario}` : `Example of ${coachTargetWord}`,
         pronunciation: '',
         box: 1,
-        last_review_date: null
+        last_review_date: null,
+        error_count: 0
       }]).select();
 
       if (error) throw error;
@@ -463,7 +493,8 @@ export default function App() {
           sentence: item.sentence || item.example || '',
           pronunciation: item.pronunciation || item.phonetic || '',
           box: item.box || 1,
-          last_review_date: item.last_review_date || null
+          last_review_date: item.last_review_date || null,
+          error_count: item.error_count || 0
         }));
 
         setLoading(true);
@@ -511,7 +542,8 @@ export default function App() {
         sentence: newSentence.trim() || `This is an example of ${newWord.trim()}.`,
         pronunciation: newPronun.trim(),
         box: 1,
-        last_review_date: null
+        last_review_date: null,
+        error_count: 0
       }])
       .select();
 
@@ -538,8 +570,8 @@ export default function App() {
     }
   };
 
-  // 統計與篩選計算
-  const todayStr = new Date().toISOString().split('T')[0];
+  // 統計與篩選計算 (使用本地時間)
+  const todayStr = getTodayStr();
   const stats = {
     total: cards.length,
     boxCounts: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
@@ -716,9 +748,17 @@ export default function App() {
               <div className="space-y-4">
                 <div className="p-5 bg-slate-900 border border-slate-800 rounded-2xl space-y-3 relative overflow-hidden">
                   <div className="flex justify-between items-center text-xs text-slate-400">
-                    <span className="px-2 py-0.5 bg-indigo-950 text-indigo-400 border border-indigo-800/50 rounded-md font-bold">
-                      Box {currentCard.box || 1}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 bg-indigo-950 text-indigo-400 border border-indigo-800/50 rounded-md font-bold">
+                        Box {currentCard.box || 1}
+                      </span>
+                      {/* 🔥 錯題次數提示標籤 */}
+                      {(currentCard.error_count || 0) > 0 && (
+                        <span className="px-2 py-0.5 bg-rose-950 text-rose-400 border border-rose-800/50 rounded-md font-bold flex items-center gap-0.5 text-[11px]">
+                          <Flame size={12} /> 易錯加強 (錯 {currentCard.error_count} 次)
+                        </span>
+                      )}
+                    </div>
                     <span>{currentCard.pronunciation || ''}</span>
                   </div>
 
@@ -926,6 +966,12 @@ export default function App() {
                         <span className="text-base font-bold text-indigo-300">{card.word}</span>
                         {card.pronunciation && (
                           <span className="text-[11px] text-slate-400 font-mono">{card.pronunciation}</span>
+                        )}
+                        {/* 總覽中顯示易錯標記 */}
+                        {(card.error_count || 0) > 0 && (
+                          <span className="px-1.5 py-0.5 bg-rose-950 text-rose-400 border border-rose-800/50 rounded text-[10px] font-bold flex items-center gap-0.5">
+                            <Flame size={10} /> 錯 {card.error_count} 次
+                          </span>
                         )}
                       </div>
                       <span className="px-2 py-0.5 bg-indigo-950 text-indigo-400 border border-indigo-800/40 rounded text-[10px] font-bold">
