@@ -66,7 +66,7 @@ export default function App() {
     }
   }, [user]);
 
-  // 突破 1000 筆限制：循環分頁抓取全部資料
+  // 突破 1000 筆限制：循環分頁抓取全部資料 (修復：不覆蓋當前正在作答的題目)
   const fetchCards = async () => {
     setLoading(true);
     let allCards = [];
@@ -97,20 +97,29 @@ export default function App() {
       }
 
       setCards(allCards);
-      pickNextCard(allCards);
+      
+      // 關鍵修復：只有在目前「完全沒有選定卡片」時，才進行初次抽題
+      // 如果使用者已經在做某題，就保持該題不變！
+      setCurrentCard((prevCard) => {
+        if (!prevCard && allCards.length > 0) {
+          pickNextCard(allCards);
+        }
+        return prevCard;
+      });
+
     } catch (err) {
       console.error("載入字卡失敗:", err);
-      alert(`載入字卡失敗: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  // 3. 挑選下一張待複習字卡
+  // 挑選下一張待複習字卡 (支援手動切換與自動挖空)
   const pickNextCard = (cardList) => {
     const list = cardList || cards;
     if (!list || list.length === 0) {
       setCurrentCard(null);
+      setClozeSentence('');
       return;
     }
 
