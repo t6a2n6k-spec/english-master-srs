@@ -44,44 +44,13 @@ export default function App() {
   const [newPronun, setNewPronun] = useState('');
   const [isAutoFilling, setIsAutoFilling] = useState(false);
 
-  // ⏰ 每日 09:00 與 14:00 學習定時提醒
-  useEffect(() => {
-    // 請求瀏覽器系統通知權限
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
-  
-    let lastNotifiedTime = '';
-  
-    const timer = setInterval(() => {
-      const now = new Date();
-      const hours = now.getHours();
-      const minutes = now.getMinutes();
-      const timeKey = `${now.toISOString().split('T')[0]}_${hours}`;
-  
-      // 檢查是否為 09:00 或 14:00
-      if ((hours === 9 || hours === 14) && minutes === 0) {
-        if (lastNotifiedTime !== timeKey) {
-          lastNotifiedTime = timeKey;
-          const msg = `🔔 學習時間到了！現在是 ${hours}:00，該上線複習你的間隔記憶字卡囉！`;
-          
-          // 優先使用系統桌面推播通知，若無權限則彈出視窗
-          if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification('英文大師 SRS 學習提醒', { body: msg });
-          } else {
-            alert(msg);
-          }
-        }
-      }
-    }, 30000); // 每 30 秒檢查一次
-  
-    return () => clearInterval(timer);
-  }, []);
-
   const fileInputRef = useRef(null);
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
 
-  // 取得本地時區的 YYYY-MM-DD (徹底解決跨午夜時區延遲 Bug)
+  // 🎯 設定 Box 1~5 間隔週期：1天 / 4天 / 7天 / 14天 / 30天
+  const INTERVALS = { 1: 1, 2: 4, 3: 7, 4: 14, 5: 30 };
+
+  // 取得本地時區的 YYYY-MM-DD
   const getTodayStr = () => {
     const now = new Date();
     const year = now.getFullYear();
@@ -89,6 +58,35 @@ export default function App() {
     const day = String(now.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   };
+
+  // ⏰ 每日 09:00 與 14:00 定時提醒
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
+    let lastNotifiedTime = '';
+    const timer = setInterval(() => {
+      const now = new Date();
+      const hours = now.getHours();
+      const minutes = now.getMinutes();
+      const timeKey = `${getTodayStr()}_${hours}`;
+
+      if ((hours === 9 || hours === 14) && minutes === 0) {
+        if (lastNotifiedTime !== timeKey) {
+          lastNotifiedTime = timeKey;
+          const msg = `🔔 學習時間到了！現在是 ${hours}:00，該上線複習你的間隔記憶字卡囉！`;
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('英文大師 SRS 學習提醒', { body: msg });
+          } else {
+            alert(msg);
+          }
+        }
+      }
+    }, 30000);
+
+    return () => clearInterval(timer);
+  }, []);
 
   // 1. 監聽登入狀態
   useEffect(() => {
@@ -142,7 +140,7 @@ export default function App() {
 
       setCards(allCards);
 
-      // 只有在目前完全沒有選題時才抽題
+      // 只有在目前完全沒有題目時才初次抽題
       setCurrentCard((prevCard) => {
         if (!prevCard && allCards.length > 0) {
           pickNextCard(allCards, reviewMode);
@@ -157,7 +155,7 @@ export default function App() {
     }
   };
 
-  // 3. 挑選下一張字卡（新週期：1 / 4 / 7 / 14 / 30 天）
+  // 3. 挑選下一張字卡（錯題分層加權優先排程 + 防連續卡死）
   const pickNextCard = (cardList, mode = reviewMode) => {
     const list = cardList || cards;
     if (!list || list.length === 0) {
@@ -165,53 +163,64 @@ export default function App() {
       setClozeSentence('');
       return;
     }
-  
+
     const todayStr = getTodayStr();
     let targetList = [];
-  
+
     if (mode === 'today') {
-      // 今日已刷模式
+      // 今日已刷清單
       targetList = list.filter(card => card.last_review_date === todayStr);
     } else {
-      // SRS Leitner 5 格到期卡片
+      // ⏰ 到期複習清單（依據 1/4/7/14/30 天判定）
       targetList = list.filter(card => {
         if (!card.last_review_date) return true;
         const diffDays = Math.floor((new Date(todayStr) - new Date(card.last_review_date)) / (1000 * 3600 * 24));
-        // 🎯 更新後的間隔天數：1天 / 4天 / 7天 / 14天 / 30天
-        const intervals = { 1: 1, 2: 4, 3: 7, 4: 14, 5: 30 };
-        return diffDays >= (intervals[card.box] || 1);
+        return diffDays >= (INTERVALS[card.box] || 1);
       });
     }
-  
+
     if (targetList.length === 0) {
       setCurrentCard(null);
-      setClozeSentence(mode === 'today' ? '🎉 今日尚未有已複習的字卡！' : '🎉 所有到期字卡皆已複習完畢！');
+      setClozeSentence(mode === 'today' ? '🎉 今日尚未有已複習的字卡！' : '🎉 今日所有到期字卡皆已複習完畢！');
       return;
     }
-  
+
     let selectedCard = null;
-  
+
     if (mode === 'today') {
+      // 🎯 今日已刷：隨機輪調，排除上一題
       const candidates = targetList.length > 1 
         ? targetList.filter(c => c.id !== currentCard?.id)
         : targetList;
       selectedCard = candidates[Math.floor(Math.random() * candidates.length)];
     } else {
+      // 🎯 到期複習：按錯題次數 error_count 降序排列
       const sortedList = [...targetList].sort((a, b) => (b.error_count || 0) - (a.error_count || 0));
       const maxErrors = sortedList[0].error_count || 0;
       
+      // 取出錯誤次數最多的一批字卡
       let topCandidates = sortedList.filter(c => (c.error_count || 0) === maxErrors);
+      
+      // 若最高層有多張，排除當前題目避免連出
       if (topCandidates.length > 1 && currentCard) {
         const withoutCurrent = topCandidates.filter(c => c.id !== currentCard.id);
         if (withoutCurrent.length > 0) topCandidates = withoutCurrent;
       }
-      selectedCard = topCandidates[Math.floor(Math.random() * topCandidates.length)];
+      
+      // 若最高層只有 1 張且剛好就是上一題（剛答錯退回），若有其他到期卡則先穿插一張
+      if (topCandidates.length === 1 && topCandidates[0].id === currentCard?.id && sortedList.length > 1) {
+        const otherCandidates = sortedList.filter(c => c.id !== currentCard.id);
+        selectedCard = otherCandidates[Math.floor(Math.random() * otherCandidates.length)];
+      } else {
+        selectedCard = topCandidates[Math.floor(Math.random() * topCandidates.length)];
+      }
     }
     
     setCurrentCard(selectedCard);
     setUserInput('');
     setFeedback(null);
-  
+
+    // 句子挖空處理
     if (selectedCard.sentence && selectedCard.word) {
       const regex = new RegExp(`\\b${selectedCard.word}\\b`, 'gi');
       const blanked = selectedCard.sentence.replace(regex, '_______');
@@ -246,7 +255,7 @@ export default function App() {
     return text.replace(/[#*`]/g, '').replace(/\n\s*\n/g, '\n\n').trim();
   };
 
-  // 5. 【間隔複習】作答檢查 (包含錯題計數加減與模式隔離)
+  // 5. 【間隔複習】作答檢查
   const handleCheckAnswer = async () => {
     if (!userInput.trim() || !currentCard || isCheckingCloze) return;
 
@@ -271,7 +280,7 @@ export default function App() {
         });
       } else {
         const nextBox = Math.min(currentBox + 1, 5);
-        const newErrorCount = Math.max(0, currentErrors - 1); // 答對時錯題權重 -1
+        const newErrorCount = Math.max(0, currentErrors - 1);
         setFeedback({ 
           isCorrect: true, 
           msg: `🎉 完全正確！成功升級至 Box ${nextBox}`,
@@ -344,7 +353,7 @@ export default function App() {
           });
         } else {
           const nextBox = currentBox > 3 ? 3 : 1;
-          const newErrorCount = currentErrors + 1; // 答錯時錯題次數 +1 (大幅提升未來優先度)
+          const newErrorCount = currentErrors + 1;
           setFeedback({ 
             isCorrect: false, 
             msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox}，已加入易錯優先清單)`,
@@ -385,7 +394,7 @@ export default function App() {
     }
   };
 
-  // 6. 語音朗讀發音
+  // 6. 語音朗讀
   const playSpeech = (text) => {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
@@ -617,22 +626,43 @@ export default function App() {
     }
   };
 
-  // 統計與篩選計算 (使用本地時間)
+  // 🎯 統計「今日待複習 (Due)」與「今日已複習 (Reviewed)」計算
   const todayStr = getTodayStr();
   const stats = {
     total: cards.length,
+    todayDue: 0,
+    todayReviewed: 0,
     boxCounts: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+    boxDueCounts: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
     todayCounts: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
   };
 
   cards.forEach(c => {
     const b = c.box || 1;
     stats.boxCounts[b] = (stats.boxCounts[b] || 0) + 1;
+
+    // 今日已複習判定
     if (c.last_review_date === todayStr) {
       stats.todayCounts[b] = (stats.todayCounts[b] || 0) + 1;
+      stats.todayReviewed += 1;
+    }
+
+    // ⏰ 今日待複習判定（從未複習過 或 相差天數 >= 間隔天數）
+    let isDue = false;
+    if (!c.last_review_date) {
+      isDue = true;
+    } else {
+      const diffDays = Math.floor((new Date(todayStr) - new Date(c.last_review_date)) / (1000 * 3600 * 24));
+      if (diffDays >= (INTERVALS[b] || 1)) {
+        isDue = true;
+      }
+    }
+
+    if (isDue) {
+      stats.todayDue += 1;
+      stats.boxDueCounts[b] = (stats.boxDueCounts[b] || 0) + 1;
     }
   });
-  const todayReviewedTotal = Object.values(stats.todayCounts).reduce((a, b) => a + b, 0);
 
   // 總覽搜尋邏輯
   const filteredCards = cards.filter(c => {
@@ -717,7 +747,11 @@ export default function App() {
       <header className="p-4 bg-slate-900/80 backdrop-blur border-b border-slate-800 flex justify-between items-center sticky top-0 z-10">
         <div>
           <h1 className="text-xl font-black text-indigo-400">英文大師 SRS</h1>
-          <p className="text-[11px] text-slate-400">總字庫: <span className="text-indigo-400 font-bold">{stats.total}</span> 張 | 今日已複習: <span className="text-emerald-400 font-bold">{todayReviewedTotal}</span></p>
+          <p className="text-[11px] text-slate-400">
+            總字庫: <span className="text-indigo-400 font-bold">{stats.total}</span> | 
+            待複習: <span className="text-rose-400 font-bold">{stats.todayDue}</span> | 
+            已複習: <span className="text-emerald-400 font-bold">{stats.todayReviewed}</span>
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <input 
@@ -746,15 +780,15 @@ export default function App() {
       {/* 統計看板 */}
       <section className="p-4 bg-slate-900/40 border-b border-slate-800/60">
         <div className="flex justify-between items-center mb-2">
-          <span className="text-xs font-bold text-slate-400">KGB 5-Box 分佈 ({stats.total} 張)</span>
+          <span className="text-xs font-bold text-slate-400">KGB 5-Box 分佈 (待複習: {stats.todayDue} 張)</span>
           {loading && <span className="text-[10px] text-indigo-400 animate-pulse">雲端同步中...</span>}
         </div>
         <div className="grid grid-cols-5 gap-1.5 text-center">
           {[1, 2, 3, 4, 5].map(b => (
             <div key={b} className={`p-2 rounded-xl border ${currentCard?.box === b && activeTab === 'review' ? 'border-indigo-500 bg-indigo-950/40' : 'border-slate-800 bg-slate-900/60'}`}>
-              <div className="text-[10px] text-slate-400">Box {b}</div>
+              <div className="text-[10px] text-slate-400">Box {b} ({INTERVALS[b]}d)</div>
               <div className="text-sm font-bold">{stats.boxCounts[b]}</div>
-              <div className="text-[9px] text-emerald-400">今: {stats.todayCounts[b]}</div>
+              <div className="text-[9px] text-rose-400">待: {stats.boxDueCounts[b]}</div>
             </div>
           ))}
         </div>
@@ -776,7 +810,7 @@ export default function App() {
                     : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
                 }`}
               >
-                ⏰ 到期複習 (SRS)
+                ⏰ 到期複習 ({stats.todayDue})
               </button>
               <button
                 type="button"
@@ -787,7 +821,7 @@ export default function App() {
                     : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
                 }`}
               >
-                📅 今日已刷 ({todayReviewedTotal})
+                📅 今日已刷 ({stats.todayReviewed})
               </button>
             </div>
 
@@ -880,7 +914,7 @@ export default function App() {
             ) : (
               <div className="text-center py-12 text-slate-500 space-y-3">
                 <Sparkles size={40} className="mx-auto text-indigo-400/50" />
-                <p>{reviewMode === 'today' ? '今天還沒有複習過的字卡喔！先切換到「⏰ 到期複習」開始刷題吧。' : '太棒了！目前沒有到期的字卡需要複習。'}</p>
+                <p>{reviewMode === 'today' ? '今天還沒有複習過的字卡喔！先切換到「⏰ 到期複習」開始刷題吧。' : '太棒了！今日所有到期字卡皆已複習完畢。'}</p>
                 <button 
                   onClick={() => reviewMode === 'today' ? handleModeChange('due') : setActiveTab('add')}
                   className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow"
@@ -1014,7 +1048,7 @@ export default function App() {
                         {card.pronunciation && (
                           <span className="text-[11px] text-slate-400 font-mono">{card.pronunciation}</span>
                         )}
-                        {/* 總覽中顯示易錯標記 */}
+                        {/* 總覽顯示易錯標記 */}
                         {(card.error_count || 0) > 0 && (
                           <span className="px-1.5 py-0.5 bg-rose-950 text-rose-400 border border-rose-800/50 rounded text-[10px] font-bold flex items-center gap-0.5">
                             <Flame size={10} /> 錯 {card.error_count} 次
