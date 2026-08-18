@@ -16,6 +16,7 @@ export default function App() {
 
   // 分頁狀態：'review' | 'coach' | 'library' | 'add'
   const [activeTab, setActiveTab] = useState('review'); 
+  const [reviewMode, setReviewMode] = useState('due'); // 'due' (SRS到期) | 'today' (今日已刷)
   const [cards, setCards] = useState([]);
   const [currentCard, setCurrentCard] = useState(null);
   const [clozeSentence, setClozeSentence] = useState('');
@@ -66,7 +67,7 @@ export default function App() {
     }
   }, [user]);
 
-  // 突破 1000 筆限制：循環分頁抓取全部資料 (修復：不覆蓋當前正在作答的題目)
+  // 突破 1000 筆限制 + 鎖定當前題目不跳轉
   const fetchCards = async () => {
     setLoading(true);
     let allCards = [];
@@ -97,12 +98,11 @@ export default function App() {
       }
 
       setCards(allCards);
-      
-      // 關鍵修復：只有在目前「完全沒有選定卡片」時，才進行初次抽題
-      // 如果使用者已經在做某題，就保持該題不變！
+
+      // 只有在完全沒有選題時才初次抽題
       setCurrentCard((prevCard) => {
         if (!prevCard && allCards.length > 0) {
-          pickNextCard(allCards);
+          pickNextCard(allCards, reviewMode);
         }
         return prevCard;
       });
@@ -114,8 +114,8 @@ export default function App() {
     }
   };
 
-  // 挑選下一張待複習字卡 (支援手動切換與自動挖空)
-  const pickNextCard = (cardList) => {
+  // 3. 挑選下一張待複習字卡 (支援 SRS 到期 vs 今日已刷 模式)
+  const pickNextCard = (cardList, mode = reviewMode) => {
     const list = cardList || cards;
     if (!list || list.length === 0) {
       setCurrentCard(null);
@@ -124,14 +124,27 @@ export default function App() {
     }
 
     const todayStr = new Date().toISOString().split('T')[0];
-    const dueCards = list.filter(card => {
-      if (!card.last_review_date) return true;
-      const diffDays = Math.floor((new Date(todayStr) - new Date(card.last_review_date)) / (1000 * 3600 * 24));
-      const intervals = { 1: 1, 2: 3, 3: 7, 4: 30, 5: 90 };
-      return diffDays >= (intervals[card.box] || 1);
-    });
+    let targetList = [];
 
-    const targetList = dueCards.length > 0 ? dueCards : list;
+    if (mode === 'today') {
+      // 模式 1：今日已刷過/複習過的卡片
+      targetList = list.filter(card => card.last_review_date === todayStr);
+    } else {
+      // 模式 2：標準 SRS Leitner 5 格到期重複卡片
+      targetList = list.filter(card => {
+        if (!card.last_review_date) return true;
+        const diffDays = Math.floor((new Date(todayStr) - new Date(card.last_review_date)) / (1000 * 3600 * 24));
+        const intervals = { 1: 1, 2: 3, 3: 7, 4: 30, 5: 90 };
+        return diffDays >= (intervals[card.box] || 1);
+      });
+    }
+
+    if (targetList.length === 0) {
+      setCurrentCard(null);
+      setClozeSentence(mode === 'today' ? '🎉 今日尚未有已複習的字卡！' : '🎉 所有到期字卡皆已複習完畢！');
+      return;
+    }
+
     const selectedCard = targetList[Math.floor(Math.random() * targetList.length)];
     
     setCurrentCard(selectedCard);
@@ -146,6 +159,12 @@ export default function App() {
     } else {
       setClozeSentence('_______');
     }
+  };
+
+  // 切換複習模式
+  const handleModeChange = (newMode) => {
+    setReviewMode(newMode);
+    pickNextCard(cards, newMode);
   };
 
   // 4. 呼叫 Gemini REST API
@@ -171,87 +190,87 @@ export default function App() {
       .trim();
   };
 
-  // 5. 【間隔複習】AI 深度檢測作答
+  // 5. 【間隔複習】AI 深度檢測作答 (含本機模糊比對 + API 超額防護)
   const handleCheckAnswer = async () => {
-  if (!userInput.trim() || !currentCard || isCheckingCloze) return;
+    if (!userInput.trim() || !currentCard || isCheckingCloze) return;
 
-  setIsCheckingCloze(true);
-  // 本地預處理：去除標點符號與首尾空格
-  const cleanStr = (s) => (s || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
-  const inputClean = cleanStr(userInput);
-  const targetClean = cleanStr(currentCard.word);
-  const todayStr = new Date().toISOString().split('T')[0];
+    setIsCheckingCloze(true);
+    const cleanStr = (s) => (s || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
+    const inputClean = cleanStr(userInput);
+    const targetClean = cleanStr(currentCard.word);
+    const todayStr = new Date().toISOString().split('T')[0];
 
-  // 1. 本地精確比對通過 -> 完全不耗費任何 API！
-  if (inputClean === targetClean) {
-    const nextBox = Math.min((currentCard.box || 1) + 1, 5);
-    confetti({ particleCount: 60, spread: 60, origin: { y: 0.8 } });
-    setFeedback({ 
-      isCorrect: true, 
-      msg: `🎉 完全正確！成功升級至 Box ${nextBox}`,
-      explanation: '回答精準，語塊使用非常道地！'
-    });
-
-    await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-    setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
-    setIsCheckingCloze(false);
-    return;
-  }
-
-  // 2. 不一致時呼叫 AI 診斷（加入超額 429 容錯機制）
-  try {
-    const prompt = `
-    你是一位專業且具同理心的美語教練，請診斷學生的填空作答：
-    - 完整原句: "${currentCard.sentence}"
-    - 原定目標語塊: "${currentCard.word}" (${currentCard.meaning})
-    - 學生填入的語彙: "${userInput.trim()}"
-
-    請判斷學生填入的語彙是否在該句子中完全通順且道地？
-    請直接回傳嚴格的 JSON 格式（不要使用 Markdown 標籤）：
-    {
-      "is_acceptable": true 或 false,
-      "explanation": "繁體中文簡明解析"
-    }
-    `;
-
-    const rawText = await callGemini(prompt);
-    const cleaned = rawText.replace(/```json|```/g, '').trim();
-    const result = JSON.parse(cleaned);
-
-    let nextBox = currentCard.box || 1;
-    if (result.is_acceptable) {
-      nextBox = Math.min(nextBox + 1, 5);
-      confetti({ particleCount: 50, spread: 50, origin: { y: 0.8 } });
+    // 本地精確比對成功 -> 0 消耗 API
+    if (inputClean === targetClean) {
+      const nextBox = Math.min((currentCard.box || 1) + 1, 5);
+      confetti({ particleCount: 60, spread: 60, origin: { y: 0.8 } });
       setFeedback({ 
         isCorrect: true, 
-        msg: `✨ 很好！這也是一種可接受的道地說法！(升至 Box ${nextBox})`,
-        explanation: result.explanation
+        msg: `🎉 完全正確！成功升級至 Box ${nextBox}`,
+        explanation: '回答精準，語塊使用非常道地！'
       });
-    } else {
-      nextBox = nextBox > 3 ? 3 : 1;
+
+      await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
+      setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+      setIsCheckingCloze(false);
+      return;
+    }
+
+    // 本地比對不一致 -> 呼叫 AI 分析 (含 429 容錯降級)
+    try {
+      const prompt = `
+      你是一位專業且具同理心的美語教練，請診斷學生的填空作答：
+      - 完整原句: "${currentCard.sentence}"
+      - 原定目標語塊: "${currentCard.word}" (${currentCard.meaning})
+      - 學生填入的語彙: "${userInput.trim()}"
+
+      請判斷學生填入的語彙是否在該句子中完全通順且道地？如果不行，請詳細指出「為什麼這個語境不能這樣用」。
+      
+      請直接回傳嚴格的 JSON 格式（不要使用 Markdown 標籤，不要有 # 或 * 符號）：
+      {
+        "is_acceptable": true 或 false,
+        "explanation": "繁體中文簡明解析"
+      }
+      `;
+
+      const rawText = await callGemini(prompt);
+      const cleaned = rawText.replace(/```json|```/g, '').trim();
+      const result = JSON.parse(cleaned);
+
+      let nextBox = currentCard.box || 1;
+      if (result.is_acceptable) {
+        nextBox = Math.min(nextBox + 1, 5);
+        confetti({ particleCount: 50, spread: 50, origin: { y: 0.8 } });
+        setFeedback({ 
+          isCorrect: true, 
+          msg: `✨ 很好！這也是一種可接受的道地說法！(升至 Box ${nextBox})`,
+          explanation: cleanMarkdownSymbols(result.explanation)
+        });
+      } else {
+        nextBox = nextBox > 3 ? 3 : 1;
+        setFeedback({ 
+          isCorrect: false, 
+          msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
+          explanation: cleanMarkdownSymbols(result.explanation)
+        });
+      }
+
+      await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
+      setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+    } catch (err) {
+      // API 超額 (429) 或離線時的降級保護
+      const nextBox = (currentCard.box || 1) > 3 ? 3 : 1;
       setFeedback({ 
         isCorrect: false, 
         msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
-        explanation: result.explanation
+        explanation: '拼寫與目標設定不一致。（若短時間複習過快，系統已自動切換為本機標準判定）'
       });
+      await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
+      setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
+    } finally {
+      setIsCheckingCloze(false);
     }
-
-    await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-    setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
-  } catch (err) {
-    // API 超額（429）或網路中斷時的降級保護
-    const nextBox = (currentCard.box || 1) > 3 ? 3 : 1;
-    setFeedback({ 
-      isCorrect: false, 
-      msg: `❌ 目標答案是: "${currentCard.word}" (退回 Box ${nextBox})`,
-      explanation: '拼寫與目標設定不一致。（若短時間複習過快，系統已自動切換為本機標準判定）'
-    });
-    await supabase.from('flashcards').update({ box: nextBox, last_review_date: todayStr }).eq('id', currentCard.id);
-    setCards(cards.map(c => c.id === currentCard.id ? { ...c, box: nextBox, last_review_date: todayStr } : c));
-  } finally {
-    setIsCheckingCloze(false);
-  }
-};
+  };
 
   // 6. 語音朗讀發音
   const playSpeech = (text) => {
@@ -411,7 +430,6 @@ export default function App() {
         }));
 
         setLoading(true);
-        // 每 500 筆切為一組批次寫入
         const chunkSize = 500;
         for (let i = 0; i < formatted.length; i += chunkSize) {
           const chunk = formatted.slice(i, i + chunkSize);
@@ -500,7 +518,7 @@ export default function App() {
   });
   const todayReviewedTotal = Object.values(stats.todayCounts).reduce((a, b) => a + b, 0);
 
-  // 總覽搜尋與篩選邏輯
+  // 總覽搜尋邏輯
   const filteredCards = cards.filter(c => {
     const matchBox = filterBox === 'all' || (c.box || 1) === parseInt(filterBox);
     const q = searchQuery.trim().toLowerCase();
@@ -631,6 +649,32 @@ export default function App() {
         {/* 分頁 1: 間隔複習 */}
         {activeTab === 'review' && (
           <div>
+            {/* 複習模式切換按鈕 */}
+            <div className="flex justify-center gap-2 mb-4">
+              <button
+                type="button"
+                onClick={() => handleModeChange('due')}
+                className={`px-4 py-1.5 rounded-full font-bold text-xs transition-all ${
+                  reviewMode === 'due'
+                    ? 'bg-indigo-600 text-white shadow-lg'
+                    : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                ⏰ 到期複習 (SRS)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleModeChange('today')}
+                className={`px-4 py-1.5 rounded-full font-bold text-xs transition-all ${
+                  reviewMode === 'today'
+                    ? 'bg-emerald-600 text-white shadow-lg'
+                    : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                📅 今日已刷 ({todayReviewedTotal})
+              </button>
+            </div>
+
             {currentCard ? (
               <div className="space-y-4">
                 <div className="p-5 bg-slate-900 border border-slate-800 rounded-2xl space-y-3 relative overflow-hidden">
@@ -670,7 +714,7 @@ export default function App() {
                       {isCheckingCloze ? 'AI 診斷中...' : '驗證答案'}
                     </button>
                     <button 
-                      onClick={() => pickNextCard()}
+                      onClick={() => pickNextCard(cards, reviewMode)}
                       className="py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl transition"
                     >
                       跳過此題
@@ -700,7 +744,7 @@ export default function App() {
                         <Volume2 size={16} /> 朗讀正確原句
                       </button>
                       <button 
-                        onClick={() => pickNextCard()} 
+                        onClick={() => pickNextCard(cards, reviewMode)} 
                         className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow transition ml-auto"
                       >
                         下一題 ➔
@@ -712,12 +756,12 @@ export default function App() {
             ) : (
               <div className="text-center py-12 text-slate-500 space-y-3">
                 <Sparkles size={40} className="mx-auto text-indigo-400/50" />
-                <p>太棒了！目前沒有到期的字卡需要複習。</p>
+                <p>{reviewMode === 'today' ? '今天還沒有複習過的字卡喔！先切換到「⏰ 到期複習」開始刷題吧。' : '太棒了！目前沒有到期的字卡需要複習。'}</p>
                 <button 
-                  onClick={() => setActiveTab('add')}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold"
+                  onClick={() => reviewMode === 'today' ? handleModeChange('due') : setActiveTab('add')}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow"
                 >
-                  前往新增單字
+                  {reviewMode === 'today' ? '前往到期複習' : '前往新增單字'}
                 </button>
               </div>
             )}
@@ -799,7 +843,7 @@ export default function App() {
           </div>
         )}
 
-        {/* 分頁 3: 字卡庫總覽 (NEW!) */}
+        {/* 分頁 3: 字卡庫總覽 */}
         {activeTab === 'library' && (
           <div className="space-y-4">
             <div className="flex justify-between items-center">
