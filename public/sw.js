@@ -1,49 +1,46 @@
-// 監聽推播事件
-self.addEventListener('push', (event) => {
-  let data = {
-    title: '📚 英文大師 複習提醒',
-    body: '今天有字卡需要複習囉，快來提升你的口語語感！',
-    url: '/'
-  };
+// 監聽雲端推播事件
+self.addEventListener('push', function(event) {
+  if (!event.data) return;
 
-  if (event.data) {
-    try {
-      data = event.data.json();
-    } catch (e) {
-      data.body = event.data.text();
-    }
+  try {
+    const data = event.data.json();
+    const title = data.title || '英文大師 SRS';
+    const options = {
+      body: data.body || '該上線複習今日字卡囉！',
+      icon: '/favicon.ico',
+      badge: '/favicon.ico',
+      vibrate: [200, 100, 200],
+      data: {
+        url: '/'
+      }
+    };
+
+    event.waitUntil(
+      self.registration.showNotification(title, options)
+    );
+  } catch (err) {
+    const text = event.data.text();
+    event.waitUntil(
+      self.registration.showNotification('英文大師 SRS', { body: text })
+    );
   }
-
-  const options = {
-    body: data.body,
-    icon: '/vite.svg',
-    badge: '/vite.svg',
-    vibrate: [100, 50, 100],
-    data: {
-      url: data.url || '/'
-    }
-  };
-
-  event.waitUntil(
-    self.registration.showNotification(data.title, options)
-  );
 });
 
-// 點擊通知時自動喚醒 App
-self.addEventListener('notificationclick', (event) => {
+// 點擊通知時自動打開 App
+self.addEventListener('notificationclick', function(event) {
   event.notification.close();
-  const targetUrl = event.notification.data.url || '/';
-
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      for (const client of clientList) {
-        if (client.url === targetUrl && 'focus' in client) {
-          return client.focus();
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clientList) {
+      if (clientList.length > 0) {
+        let client = clientList[0];
+        for (let i = 0; i < clientList.length; i++) {
+          if (clientList[i].focused) {
+            client = clientList[i];
+          }
         }
+        return client.focus();
       }
-      if (clients.openWindow) {
-        return clients.openWindow(targetUrl);
-      }
+      return clients.openWindow('/');
     })
   );
 });
