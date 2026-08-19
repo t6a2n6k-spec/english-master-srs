@@ -1,9 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 import webpush from 'web-push';
 
-// ✅ 與前端完全匹配的有效密鑰對
-const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || process.env.VITE_VAPID_PUBLIC_KEY || 'BGsX0fLhLEJH-Lzme5WOkQPN3A32BLeszoPShOUXYmMKWT-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU';
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE';
+// ✅ 匹配的標準金鑰對
+const VAPID_PUBLIC_KEY = 'BGsX0fLhLEJH-Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU';
+const VAPID_PRIVATE_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
