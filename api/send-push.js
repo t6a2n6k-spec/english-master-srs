@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import webpush from 'web-push';
 
 // 標準 P-256 VAPID 密鑰對
-const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BGsX0fLhLEJH-Lzme5WOkQPN3A32BLeszoPShOUXYmMKWT-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU';
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIhbQFLXYp5Nksh8U';
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE';
 
 export default async function handler(req, res) {
