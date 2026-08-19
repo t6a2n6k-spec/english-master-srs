@@ -2,8 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 import webpush from 'web-push';
 
 // 標準 P-256 VAPID 密鑰對
-const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BGXGN5pMKEuUgIX3lUQt5D6viELxlhnGpxFT5xDBAALZTpQPDn2MPP-Kig41GeYfyO78Le43coh07WlL_az07pQ';
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE';
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIhbQFLXYp5Nksh8U';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'UUxI4O8v9v_78i_E8j5Fh0aW4O-6P0Q8Z3xX1yY2zAw';
 
 export default async function handler(req, res) {
   // 設定 CORS 允許跨域請求
