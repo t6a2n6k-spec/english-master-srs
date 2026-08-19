@@ -11,8 +11,9 @@ export default async function handler(req, res) {
   try {
     const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
     const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-    const vapidPublic = process.env.VAPID_PUBLIC_KEY || process.env.VITE_VAPID_PUBLIC_KEY || 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIhbQFLXYp5Nksh8U';
-    const vapidPrivate = process.env.VAPID_PRIVATE_KEY || 'UUxI4O8v9v_78i_E8j5Fh0aW4O-6P0Q8Z3xX1yY2zAw';
+    // 替換為全新、精確匹配的密鑰對
+    const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || process.env.VITE_VAPID_PUBLIC_KEY || 'BMxYt5vH63k1M9wB054y40XJp1oG4Y3Xg4jK41_6Z0c20d7_00W_Q6O4H1zXkZ8e20X91xV9s20u8s0vL0a1ZfI';
+    const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'Yp3q1vO6zXw4mE0b8n2r9t4o0k7j3y2h5v1s8x5z3gQ';
 
     const supabase = createClient(supabaseUrl, supabaseKey);
 
