@@ -1,8 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 import webpush from 'web-push';
 
+// 標準 P-256 VAPID 密鑰對
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BGsX0fLhLEJH-Lzme5WOkQPN3A32BLeszoPShOUXYmMKWT-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE';
+
 export default async function handler(req, res) {
-  // 設定 CORS 允許跨域呼叫
+  // 設定 CORS 允許跨域請求
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -16,12 +20,12 @@ export default async function handler(req, res) {
     const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
 
     if (!supabaseUrl || !supabaseKey) {
-      throw new Error('缺少 Supabase 環境變數設定！');
+      throw new Error('缺少 Supabase 連線資訊 (URL 或 KEY)！');
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // 1. 撈出所有手機/平板的訂閱 Token
+    // 1. 撈出所有已訂閱通知的手機/平板 Token
     const { data: subscriptions, error } = await supabase
       .from('push_subscriptions')
       .select('*');
@@ -32,14 +36,11 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, message: '目前尚無已訂閱的裝置 Token' });
     }
 
-    // 2. VAPID 金鑰設定
-    const vapidPublic = process.env.VAPID_PUBLIC_KEY || 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIhbQFLXYp5Nksh8U';
-    const vapidPrivate = process.env.VAPID_PRIVATE_KEY || 'UUxI4O8v9v_78i_E8j5Fh0aW4O-6P0Q8Z3xX1yY2zA';
-
+    // 2. 設定 VAPID 授權資訊
     webpush.setVapidDetails(
       'mailto:admin@example.com',
-      vapidPublic,
-      vapidPrivate
+      VAPID_PUBLIC_KEY,
+      VAPID_PRIVATE_KEY
     );
 
     const bodyData = req.body || {};
@@ -48,7 +49,7 @@ export default async function handler(req, res) {
       body: bodyData.body || '該上線複習今日字卡囉！'
     });
 
-    // 3. 發送推播至所有已登記裝置
+    // 3. 廣播發送給所有已登記裝置
     const sendResults = await Promise.allSettled(
       subscriptions.map(sub => {
         try {
