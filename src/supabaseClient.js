@@ -6,7 +6,7 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // 必須與後端 api/send-push.js 完全一致的 VAPID 公鑰
-const VAPID_PUBLIC_KEY = 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIhbQFLXYp5Nksh8UU';
+const VAPID_PUBLIC_KEY = 'BGXGN5pMKEuUgIX3lUQt5D6viELxlhnGpxFT5xDBAALZTpQPDn2MPP-Kig41GeYfyO78Le43coh07WlL_az07pQ';
 
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
