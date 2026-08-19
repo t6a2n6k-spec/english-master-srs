@@ -1,4 +1,3 @@
-// src/supabaseClient.js
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -6,43 +5,42 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// 輔助函數：將 Base64 公鑰轉為 Uint8Array
+// VAPID 公鑰（與 api/send-push.js 一致）
+const VAPID_PUBLIC_KEY = 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIhbQFLXYp5Nksh8U';
+
 function urlBase64ToUint8Array(base64String) {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
   const rawData = window.atob(base64);
-  return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
 }
 
-// 註冊 Web Push 訂閱並存入 Supabase
+// 訂閱推播函數
 export async function subscribeToPush(userId) {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    throw new Error('此瀏覽器或裝置不支援 Web Push 通知');
+    throw new Error('此裝置或瀏覽器不支援推播通知功能');
   }
 
-  const registration = await navigator.serviceWorker.ready;
-  const permission = await Notification.requestPermission();
-  
-  if (permission !== 'granted') {
-    throw new Error('通知權限未被允許');
-  }
+  // 1. 註冊 Service Worker
+  const registration = await navigator.serviceWorker.register('/sw.js');
+  await navigator.serviceWorker.ready;
 
-  const vapidPublicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
-  let subscription = await registration.pushManager.getSubscription();
+  // 2. 向瀏覽器索取推播訂閱
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+  });
 
-  if (!subscription) {
-    subscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
-    });
-  }
-
-  // 儲存或更新至 Supabase 的 push_subscriptions 資料表
-  const { error } = await supabase.from('push_subscriptions').upsert({
-    user_id: userId,
-    subscription_json: subscription.toJSON(),
-  }, { onConflict: 'user_id' });
+  // 3. 將 Token 存入 Supabase
+  const { error } = await supabase.from('push_subscriptions').insert([{
+    user_id: userId || null,
+    subscription: JSON.stringify(subscription)
+  }]);
 
   if (error) throw error;
-  return true;
+  return subscription;
 }
